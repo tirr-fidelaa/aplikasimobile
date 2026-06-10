@@ -28,8 +28,7 @@ class GoogleCalendarService {
       if (account == null) return false;
 
       _currentUser = account;
-      final authHeaders = await account.authHeaders;
-      final client = _AuthClient(authHeaders);
+      final client = _AuthClient(account);
       _calendarApi = gcal.CalendarApi(client);
 
       return true;
@@ -58,8 +57,7 @@ class GoogleCalendarService {
       if (account == null) return false;
 
       _currentUser = account;
-      final authHeaders = await account.authHeaders;
-      final client = _AuthClient(authHeaders);
+      final client = _AuthClient(account);
       _calendarApi = gcal.CalendarApi(client);
       return true;
     } catch (e) {
@@ -108,12 +106,17 @@ class GoogleCalendarService {
     if (task.reminderTime != null) {
       // Kalau ada jam reminder, buat event berdurasi 1 jam
       final start = DateTime(
-        dueDate.year, dueDate.month, dueDate.day,
-        task.reminderTime!.hour, task.reminderTime!.minute,
+        dueDate.year,
+        dueDate.month,
+        dueDate.day,
+        task.reminderTime!.hour,
+        task.reminderTime!.minute,
       );
       final end = start.add(const Duration(hours: 1));
-      event.start = gcal.EventDateTime(dateTime: start.toUtc(), timeZone: 'Asia/Jakarta');
-      event.end = gcal.EventDateTime(dateTime: end.toUtc(), timeZone: 'Asia/Jakarta');
+      event.start =
+          gcal.EventDateTime(dateTime: start.toUtc(), timeZone: 'Asia/Jakarta');
+      event.end =
+          gcal.EventDateTime(dateTime: end.toUtc(), timeZone: 'Asia/Jakarta');
     } else {
       // Kalau tidak ada jam, buat all-day event
       final dateStr =
@@ -212,38 +215,54 @@ class GoogleCalendarService {
   // 9=Blueberry, 10=Basil, 11=Tomato
   static String _priorityToColorId(TaskPriority priority) {
     switch (priority) {
-      case TaskPriority.low: return '2';      // Sage (hijau)
-      case TaskPriority.medium: return '5';   // Banana (kuning)
-      case TaskPriority.high: return '6';     // Tangerine (oranye)
-      case TaskPriority.urgent: return '11';  // Tomato (merah)
+      case TaskPriority.low:
+        return '2'; // Sage (hijau)
+      case TaskPriority.medium:
+        return '5'; // Banana (kuning)
+      case TaskPriority.high:
+        return '6'; // Tangerine (oranye)
+      case TaskPriority.urgent:
+        return '11'; // Tomato (merah)
     }
   }
 
   // ── HELPER: RecurringType → Google Calendar RRULE ────
   static String _buildRRule(RecurringType type) {
     switch (type) {
-      case RecurringType.daily: return 'RRULE:FREQ=DAILY';
-      case RecurringType.weekly: return 'RRULE:FREQ=WEEKLY';
-      case RecurringType.monthly: return 'RRULE:FREQ=MONTHLY';
-      case RecurringType.yearly: return 'RRULE:FREQ=YEARLY';
-      default: return '';
+      case RecurringType.daily:
+        return 'RRULE:FREQ=DAILY';
+      case RecurringType.weekly:
+        return 'RRULE:FREQ=WEEKLY';
+      case RecurringType.monthly:
+        return 'RRULE:FREQ=MONTHLY';
+      case RecurringType.yearly:
+        return 'RRULE:FREQ=YEARLY';
+      default:
+        return '';
     }
   }
 
   static String _statusLabel(TaskStatus s) {
     switch (s) {
-      case TaskStatus.open: return 'Open';
-      case TaskStatus.inProgress: return 'In Progress';
-      case TaskStatus.done: return 'Done';
+      case TaskStatus.open:
+        return 'Open';
+      case TaskStatus.inProgress:
+        return 'In Progress';
+      case TaskStatus.done:
+        return 'Done';
     }
   }
 
   static String _priorityLabel(TaskPriority p) {
     switch (p) {
-      case TaskPriority.low: return 'Low';
-      case TaskPriority.medium: return 'Medium';
-      case TaskPriority.high: return 'High';
-      case TaskPriority.urgent: return 'Urgent';
+      case TaskPriority.low:
+        return 'Low';
+      case TaskPriority.medium:
+        return 'Medium';
+      case TaskPriority.high:
+        return 'High';
+      case TaskPriority.urgent:
+        return 'Urgent';
     }
   }
 }
@@ -253,14 +272,15 @@ class GoogleCalendarService {
 //  HTTP client yang otomatis menyisipkan token Google
 // ─────────────────────────────────────────────────────────
 class _AuthClient extends http.BaseClient {
-  final Map<String, String> _headers;
+  final GoogleSignInAccount _account;
   final http.Client _inner = http.Client();
 
-  _AuthClient(this._headers);
+  _AuthClient(this._account);
 
   @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    request.headers.addAll(_headers);
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final authHeaders = await _account.authHeaders;
+    request.headers.addAll(authHeaders);
     return _inner.send(request);
   }
 }

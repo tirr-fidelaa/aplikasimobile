@@ -5,6 +5,10 @@ import 'pages/add_task_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/notifications_page.dart';
 import 'pages/help_support_page.dart';
+import 'pages/inbox_page.dart';
+import 'dart:io';
+import 'pages/edit_profile_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'services/google_calendar_service.dart';
 import 'package:googleapis/calendar/v3.dart' as gcal;
 
@@ -12,14 +16,41 @@ void main() {
   runApp(const TodoApp());
 }
 
-class TodoApp extends StatelessWidget {
+class TodoApp extends StatefulWidget {
   const TodoApp({Key? key}) : super(key: key);
+
+  static _TodoAppState? of(BuildContext context) =>
+      context.findAncestorStateOfType<_TodoAppState>();
+
+  @override
+  State<TodoApp> createState() => _TodoAppState();
+}
+
+class _TodoAppState extends State<TodoApp> {
+  ThemeMode _themeMode = ThemeMode.light;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTheme();
+  }
+
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isDark = prefs.getBool('darkMode') ?? false;
+    setState(() => _themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
+  }
+
+  void setTheme(bool isDark) {
+    setState(() => _themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'TaskFlow',
       debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
       theme: ThemeData(
         useMaterial3: true,
         fontFamily: 'SF Pro Display',
@@ -27,6 +58,17 @@ class TodoApp extends StatelessWidget {
         colorScheme: const ColorScheme.light(
           primary: Color(0xFF4CAF8D),
           secondary: Color(0xFFF5F0E8),
+        ),
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        fontFamily: 'SF Pro Display',
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF4CAF8D),
+          secondary: Color(0xFF2D2D2D),
+          surface: Color(0xFF1E1E1E),
         ),
       ),
       home: const MainScreen(),
@@ -49,15 +91,30 @@ class _MainScreenState extends State<MainScreen> {
   List<TaskModel> _tasks = [];
   bool _isLoading = true;
 
+  String? _photoPath;
+
   @override
   void initState() {
     super.initState();
     _loadTasks();
+    _loadPhoto();
+  }
+
+  void _onPhotoChanged(String? path) {
+    setState(() => _photoPath = path);
+  }
+
+  Future<void> _loadPhoto() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() => _photoPath = prefs.getString('profilePhoto'));
   }
 
   Future<void> _loadTasks() async {
     final tasks = await TaskServices.loadTasks();
-    setState(() { _tasks = tasks; _isLoading = false; });
+    setState(() {
+      _tasks = tasks;
+      _isLoading = false;
+    });
   }
 
   Future<void> _saveTask(TaskModel task) async {
@@ -65,15 +122,55 @@ class _MainScreenState extends State<MainScreen> {
     List<TaskModel> updated;
     if (exists) {
       updated = await TaskServices.updateTask(_tasks, task);
+      // Update di Google Calendar kalau sudah pernah di-sync
+      if (task.calendarEventId != null && GoogleCalendarService.isSignedIn) {
+        try {
+          await GoogleCalendarService.updateCalendarEvent(
+              task.calendarEventId!, task);
+        } catch (e) {
+          debugPrint('Gagal update Google Calendar: $e');
+        }
+      }
     } else {
       updated = await TaskServices.addTask(_tasks, task);
+      // Auto sync ke Google Calendar kalau sudah login dan task punya due date
+      if (GoogleCalendarService.isSignedIn && task.dueDate != null) {
+        try {
+          final eventId = await GoogleCalendarService.addTaskToCalendar(task);
+          if (eventId != null) {
+            final updatedTask = task.copyWith(calendarEventId: eventId);
+            updated = await TaskServices.updateTask(updated, updatedTask);
+          }
+        } catch (e) {
+          debugPrint('Gagal auto sync ke Google Calendar: $e');
+        }
+      }
     }
     setState(() => _tasks = updated);
   }
 
   Future<void> _deleteTask(String id) async {
+    // Cari task sebelum dihapus untuk cek calendarEventId
+    final taskIndex = _tasks.indexWhere((t) => t.id == id);
+    if (taskIndex != -1) {
+      final task = _tasks[taskIndex];
+      if (task.calendarEventId != null && GoogleCalendarService.isSignedIn) {
+        try {
+          await GoogleCalendarService.deleteCalendarEvent(
+              task.calendarEventId!);
+        } catch (e) {
+          debugPrint('Gagal hapus event Google Calendar: $e');
+        }
+      }
+    }
+
     final updated = await TaskServices.deleteTask(_tasks, id);
     setState(() => _tasks = updated);
+  }
+
+  Future<void> _deleteAllTasks() async {
+    await TaskServices.saveTasks([]);
+    setState(() => _tasks = []);
   }
 
   void _openAddTask({TaskModel? existing}) {
@@ -113,9 +210,23 @@ class _MainScreenState extends State<MainScreen> {
             onAddTask: _openAddTask,
             onDeleteTask: _deleteTask,
             onUpdateTask: _saveTask,
+            onTabChange: (index) => setState(() => _currentIndex = index),
+            onDeleteAll: _deleteAllTasks,
+            photoPath: _photoPath,
           ),
-          ScheduleScreen(tasks: _tasks, onAddTask: _openAddTask, onUpdateTask: _saveTask,),
-          const ProfileScreen(),
+          ScheduleScreen(
+            tasks: _tasks,
+            onAddTask: _openAddTask,
+            onUpdateTask: _saveTask,
+            onTabChange: (index) => setState(() => _currentIndex = index),
+            onDeleteAll: _deleteAllTasks,
+            photoPath: _photoPath,
+          ),
+          ProfileScreen(
+            tasks: _tasks,
+            onDeleteAll: _deleteAllTasks,
+            onPhotoChanged: _onPhotoChanged,
+          ),
         ],
       ),
       bottomNavigationBar: _BottomNav(
@@ -134,6 +245,9 @@ class BoardsScreen extends StatefulWidget {
   final Function({TaskModel? existing}) onAddTask;
   final Function(String) onDeleteTask;
   final Function(TaskModel) onUpdateTask;
+  final Function(int) onTabChange;
+  final VoidCallback onDeleteAll;
+  final String? photoPath;
 
   const BoardsScreen({
     Key? key,
@@ -141,6 +255,9 @@ class BoardsScreen extends StatefulWidget {
     required this.onAddTask,
     required this.onDeleteTask,
     required this.onUpdateTask,
+    required this.onTabChange,
+    required this.onDeleteAll,
+    this.photoPath,
   }) : super(key: key);
 
   @override
@@ -151,7 +268,9 @@ class _BoardsScreenState extends State<BoardsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final List<TaskStatus> _statuses = [
-    TaskStatus.open, TaskStatus.inProgress, TaskStatus.done,
+    TaskStatus.open,
+    TaskStatus.inProgress,
+    TaskStatus.done,
   ];
 
   @override
@@ -185,19 +304,24 @@ class _BoardsScreenState extends State<BoardsScreen>
         ),
         title: const Text('Boards',
             style: TextStyle(
-                color: Colors.black, fontWeight: FontWeight.w700, fontSize: 18)),
+                color: Colors.black,
+                fontWeight: FontWeight.w700,
+                fontSize: 18)),
         centerTitle: true,
         actions: [
           Stack(children: [
             IconButton(
-              icon: const Icon(Icons.notifications_outlined, color: Colors.black),
+              icon:
+                  const Icon(Icons.notifications_outlined, color: Colors.black),
               onPressed: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const NotificationsPage())),
             ),
             Positioned(
-              right: 10, top: 10,
+              right: 10,
+              top: 10,
               child: Container(
-                width: 8, height: 8,
+                width: 8,
+                height: 8,
                 decoration: const BoxDecoration(
                     color: Colors.red, shape: BoxShape.circle),
               ),
@@ -208,7 +332,12 @@ class _BoardsScreenState extends State<BoardsScreen>
             child: CircleAvatar(
               radius: 17,
               backgroundColor: const Color(0xFFE8B89A),
-              child: const Icon(Icons.person, color: Colors.white, size: 18),
+              backgroundImage: widget.photoPath != null
+                  ? FileImage(File(widget.photoPath!))
+                  : null,
+              child: widget.photoPath == null
+                  ? const Icon(Icons.person, color: Colors.white, size: 18)
+                  : null,
             ),
           ),
         ],
@@ -220,17 +349,20 @@ class _BoardsScreenState extends State<BoardsScreen>
             unselectedLabelColor: Colors.black45,
             indicatorColor: const Color(0xFF4CAF8D),
             indicatorSize: TabBarIndicatorSize.label,
-            labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+            labelStyle:
+                const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
             tabs: ['Open', 'In Progress', 'Done'].asMap().entries.map((e) {
               return Tab(
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   Text(e.value),
                   const SizedBox(width: 4),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                     decoration: BoxDecoration(
                       color: e.key == _tabController.index
-                          ? const Color(0xFF4CAF8D) : Colors.black12,
+                          ? const Color(0xFF4CAF8D)
+                          : Colors.black12,
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
@@ -238,7 +370,8 @@ class _BoardsScreenState extends State<BoardsScreen>
                       style: TextStyle(
                         fontSize: 10,
                         color: e.key == _tabController.index
-                            ? Colors.white : Colors.black54,
+                            ? Colors.white
+                            : Colors.black54,
                       ),
                     ),
                   ),
@@ -292,7 +425,13 @@ class _BoardsScreenState extends State<BoardsScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _DrawerMenu(),
+      builder: (_) => _DrawerMenu(
+        tasks: widget.tasks,
+        onTabChange: widget.onTabChange,
+        onDeleteAll: widget.onDeleteAll,
+        currentIndex: 0,
+        photoPath: widget.photoPath,
+      ),
     );
   }
 }
@@ -301,7 +440,17 @@ class _BoardsScreenState extends State<BoardsScreen>
 //  DRAWER MENU (Hamburger)
 // ─────────────────────────────────────────
 class _DrawerMenu extends StatelessWidget {
-  const _DrawerMenu();
+  final List<TaskModel> tasks;
+  final Function(int) onTabChange;
+  final VoidCallback onDeleteAll;
+  final int currentIndex;
+  final String? photoPath;
+  const _DrawerMenu(
+      {required this.tasks,
+      required this.onTabChange,
+      required this.onDeleteAll,
+      required this.currentIndex,
+      this.photoPath});
 
   @override
   Widget build(BuildContext context) {
@@ -325,7 +474,8 @@ class _DrawerMenu extends StatelessWidget {
           // Handle
           Container(
             margin: const EdgeInsets.only(top: 12, bottom: 8),
-            width: 36, height: 4,
+            width: 36,
+            height: 4,
             decoration: BoxDecoration(
               color: Colors.black12,
               borderRadius: BorderRadius.circular(2),
@@ -337,7 +487,8 @@ class _DrawerMenu extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
             child: Row(children: [
               Container(
-                width: 44, height: 44,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                   color: const Color(0xFF4CAF8D).withOpacity(0.12),
                   borderRadius: BorderRadius.circular(12),
@@ -346,11 +497,15 @@ class _DrawerMenu extends StatelessWidget {
                     color: Color(0xFF4CAF8D), size: 22),
               ),
               const SizedBox(width: 12),
-              const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('TaskFlow',
-                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
-                Text('Semua Project', style: TextStyle(color: Colors.black45, fontSize: 13)),
-              ]),
+              const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('TaskFlow',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 18)),
+                    Text('All Project',
+                        style: TextStyle(color: Colors.black45, fontSize: 13)),
+                  ]),
             ]),
           ),
 
@@ -361,49 +516,77 @@ class _DrawerMenu extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 8),
               children: [
                 // Menu utama
-                _drawerItem(context, Icons.grid_view_rounded, 'Boards', true, () => Navigator.pop(context)),
-                _drawerItem(context, Icons.calendar_month_outlined, 'Schedule', false, () => Navigator.pop(context)),
-                _drawerItem(context, Icons.inbox_outlined, 'Inbox', false, () => Navigator.pop(context)),
+                _drawerItem(context, Icons.grid_view_rounded, 'Boards',
+                    currentIndex == 0, () {
+                  Navigator.pop(context);
+                  onTabChange(0);
+                }),
+                _drawerItem(context, Icons.calendar_month_outlined, 'Schedule',
+                    currentIndex == 1, () {
+                  Navigator.pop(context);
+                  onTabChange(1);
+                }),
+                _drawerItem(context, Icons.inbox_outlined, 'Inbox', false, () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => InboxPage(tasks: tasks)));
+                }),
 
                 const Padding(
                   padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
                   child: Text('PROJECTS',
                       style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.w600,
-                          color: Colors.black38, letterSpacing: 0.8)),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black38,
+                          letterSpacing: 0.8)),
                 ),
 
                 // Project list
                 ...projects.asMap().entries.map((e) => ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-                  leading: Container(
-                    width: 10, height: 10,
-                    decoration: BoxDecoration(
-                      color: projectColors[e.key],
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  title: Text(e.value,
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-                  trailing: Text(
-                    '${(e.key + 1) * 2}',
-                    style: const TextStyle(color: Colors.black38, fontSize: 12),
-                  ),
-                  onTap: () => Navigator.pop(context),
-                )),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 20),
+                      leading: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: projectColors[e.key],
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      title: Text(e.value,
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w500)),
+                      trailing: Text(
+                        '${(e.key + 1) * 2}',
+                        style: const TextStyle(
+                            color: Colors.black38, fontSize: 12),
+                      ),
+                      onTap: () => Navigator.pop(context),
+                    )),
 
                 const Divider(height: 24),
 
                 // Pengaturan
-                _drawerItem(context, Icons.settings_outlined, 'Settings', false, () {
+                _drawerItem(context, Icons.settings_outlined, 'Settings', false,
+                    () {
                   Navigator.pop(context);
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const SettingsPage()));
+                  Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => SettingsPage(
+                                onDeleteAll: onDeleteAll,
+                              )));
                 }),
-                _drawerItem(context, Icons.help_outline, 'Help & Support', false, () {
+                _drawerItem(
+                    context, Icons.help_outline, 'Help & Support', false, () {
                   Navigator.pop(context);
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const HelpSupportPage()));
+                  Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const HelpSupportPage()));
                 }),
               ],
             ),
@@ -413,10 +596,14 @@ class _DrawerMenu extends StatelessWidget {
           const Divider(height: 1),
           ListTile(
             contentPadding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
-            leading: const CircleAvatar(
+            leading: CircleAvatar(
               radius: 18,
-              backgroundColor: Color(0xFFE8B89A),
-              child: Icon(Icons.person, color: Colors.white, size: 18),
+              backgroundColor: const Color(0xFFE8B89A),
+              backgroundImage:
+                  photoPath != null ? FileImage(File(photoPath!)) : null,
+              child: photoPath == null
+                  ? const Icon(Icons.person, color: Colors.white, size: 18)
+                  : null,
             ),
             title: const Text('Itonk',
                 style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
@@ -437,7 +624,8 @@ class _DrawerMenu extends StatelessWidget {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 20),
       leading: Container(
-        width: 36, height: 36,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
           color: isActive
               ? const Color(0xFF4CAF8D).withOpacity(0.12)
@@ -501,10 +689,14 @@ class _TaskCard extends StatelessWidget {
 
   Color get _priorityColor {
     switch (task.priority) {
-      case TaskPriority.low: return const Color(0xFF64B5F6);
-      case TaskPriority.medium: return const Color(0xFFFFB74D);
-      case TaskPriority.high: return const Color(0xFFEF5350);
-      case TaskPriority.urgent: return const Color(0xFF9C27B0);
+      case TaskPriority.low:
+        return const Color(0xFF64B5F6);
+      case TaskPriority.medium:
+        return const Color(0xFFFFB74D);
+      case TaskPriority.high:
+        return const Color(0xFFEF5350);
+      case TaskPriority.urgent:
+        return const Color(0xFF9C27B0);
     }
   }
 
@@ -531,14 +723,16 @@ class _TaskCard extends StatelessWidget {
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.04),
-              blurRadius: 8, offset: const Offset(0, 2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
             ),
           ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
-              width: 20, height: 3,
+              width: 20,
+              height: 3,
               decoration: BoxDecoration(
                 color: _priorityColor,
                 borderRadius: BorderRadius.circular(2),
@@ -550,17 +744,24 @@ class _TaskCard extends StatelessWidget {
             ],
             const Spacer(),
             PopupMenuButton<String>(
-              icon: const Icon(Icons.more_horiz, size: 18, color: Colors.black38),
+              icon:
+                  const Icon(Icons.more_horiz, size: 18, color: Colors.black38),
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'open', child: Text('Mark as Open')),
-                const PopupMenuItem(value: 'progress', child: Text('Mark as In Progress')),
+                const PopupMenuItem(
+                    value: 'progress', child: Text('Mark as In Progress')),
                 const PopupMenuItem(value: 'done', child: Text('Mark as Done')),
-                const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(color: Colors.red))),
+                const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Delete', style: TextStyle(color: Colors.red))),
               ],
               onSelected: (v) {
-                if (v == 'delete') onDelete();
-                else if (v == 'open') onStatusChange(TaskStatus.open);
-                else if (v == 'progress') onStatusChange(TaskStatus.inProgress);
+                if (v == 'delete')
+                  onDelete();
+                else if (v == 'open')
+                  onStatusChange(TaskStatus.open);
+                else if (v == 'progress')
+                  onStatusChange(TaskStatus.inProgress);
                 else if (v == 'done') onStatusChange(TaskStatus.done);
               },
             ),
@@ -568,11 +769,14 @@ class _TaskCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(task.title,
               style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700, color: Colors.black)),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black)),
           if (task.description.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(task.description,
-                maxLines: 2, overflow: TextOverflow.ellipsis,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
           ],
           if (totalSubs > 0) ...[
@@ -581,7 +785,8 @@ class _TaskCard extends StatelessWidget {
               Text('$completedSubs/$totalSubs subtasks',
                   style: const TextStyle(fontSize: 11, color: Colors.black45)),
               Text('${(completedSubs / totalSubs * 100).toInt()}%',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF4CAF8D))),
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFF4CAF8D))),
             ]),
             const SizedBox(height: 4),
             ClipRRect(
@@ -589,7 +794,8 @@ class _TaskCard extends StatelessWidget {
               child: LinearProgressIndicator(
                 value: completedSubs / totalSubs,
                 backgroundColor: Colors.black.withOpacity(0.06),
-                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF4CAF8D)),
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(Color(0xFF4CAF8D)),
                 minHeight: 4,
               ),
             ),
@@ -598,26 +804,37 @@ class _TaskCard extends StatelessWidget {
           Row(children: [
             // Avatar placeholder
             SizedBox(
-              height: 26, width: 60,
+              height: 26,
+              width: 60,
               child: Stack(
-                children: List.generate(3, (i) => Positioned(
-                  left: i * 16.0,
-                  child: Container(
-                    width: 26, height: 26,
-                    decoration: BoxDecoration(
-                      color: [const Color(0xFFE8B89A), const Color(0xFFA8D8C8), const Color(0xFF90CAF9)][i],
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 1.5),
-                    ),
-                    child: const Icon(Icons.person, size: 14, color: Colors.white),
-                  ),
-                )),
+                children: List.generate(
+                    3,
+                    (i) => Positioned(
+                          left: i * 16.0,
+                          child: Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(
+                              color: [
+                                const Color(0xFFE8B89A),
+                                const Color(0xFFA8D8C8),
+                                const Color(0xFF90CAF9)
+                              ][i],
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white, width: 1.5),
+                            ),
+                            child: const Icon(Icons.person,
+                                size: 14, color: Colors.white),
+                          ),
+                        )),
               ),
             ),
             const Spacer(),
             if (task.dueDate != null)
               Row(children: [
-                Icon(Icons.calendar_today, size: 12,
+                Icon(Icons.calendar_today,
+                    size: 12,
                     color: _isDueOverdue ? Colors.red : Colors.black38),
                 const SizedBox(width: 4),
                 Text(
@@ -625,7 +842,8 @@ class _TaskCard extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 11,
                       color: _isDueOverdue ? Colors.red : Colors.black38,
-                      fontWeight: _isDueOverdue ? FontWeight.w600 : FontWeight.normal),
+                      fontWeight:
+                          _isDueOverdue ? FontWeight.w600 : FontWeight.normal),
                 ),
                 const SizedBox(width: 8),
               ]),
@@ -637,11 +855,14 @@ class _TaskCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Row(children: [
-                  const Icon(Icons.attach_file, size: 10, color: Color(0xFFFF9800)),
+                  const Icon(Icons.attach_file,
+                      size: 10, color: Color(0xFFFF9800)),
                   const SizedBox(width: 3),
                   Text('${task.attachments.length}',
                       style: const TextStyle(
-                          fontSize: 11, color: Color(0xFFFF9800), fontWeight: FontWeight.w600)),
+                          fontSize: 11,
+                          color: Color(0xFFFF9800),
+                          fontWeight: FontWeight.w600)),
                 ]),
               ),
           ]),
@@ -658,39 +879,50 @@ class ScheduleScreen extends StatefulWidget {
   final List<TaskModel> tasks;
   final Function({TaskModel? existing}) onAddTask;
   final Function(TaskModel) onUpdateTask;
- 
+  final Function(int) onTabChange;
+  final VoidCallback onDeleteAll;
+  final String? photoPath;
+
   const ScheduleScreen({
     Key? key,
     required this.tasks,
     required this.onAddTask,
     required this.onUpdateTask,
+    required this.onTabChange,
+    required this.onDeleteAll,
+    this.photoPath,
   }) : super(key: key);
- 
+
   @override
   State<ScheduleScreen> createState() => _ScheduleScreenState();
 }
- 
+
 class _ScheduleScreenState extends State<ScheduleScreen> {
   DateTime _selectedDate = DateTime.now();
   String _selectedProject = 'All Project';
- 
+
   // Google Calendar state
   bool _isGCalConnected = false;
   bool _isGCalLoading = false;
   bool _showGCalEvents = true;
   List<gcal.Event> _googleEvents = [];
   String? _syncMessage;
- 
+
   final List<String> _projects = [
-    'All Project', 'Personal', 'Work', 'Shopping', 'Health', 'Google Calendar'
+    'All Project',
+    'Personal',
+    'Work',
+    'Shopping',
+    'Health',
+    'Google Calendar'
   ];
- 
+
   @override
   void initState() {
     super.initState();
     _trySilentLogin();
   }
- 
+
   // Auto login kalau sudah pernah login sebelumnya
   Future<void> _trySilentLogin() async {
     final success = await GoogleCalendarService.trySilentSignIn();
@@ -699,14 +931,17 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       _loadGoogleEvents();
     }
   }
- 
+
   // Login ke Google
   Future<void> _connectGoogleCalendar() async {
     setState(() => _isGCalLoading = true);
     try {
       final success = await GoogleCalendarService.signIn();
       if (success && mounted) {
-        setState(() { _isGCalConnected = true; _isGCalLoading = false; });
+        setState(() {
+          _isGCalConnected = true;
+          _isGCalLoading = false;
+        });
         _loadGoogleEvents();
         _showSyncMessage('✅ Terhubung ke Google Calendar!');
       } else {
@@ -717,7 +952,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       _showSyncMessage('❌ Gagal konek: $e');
     }
   }
- 
+
   // Logout dari Google
   Future<void> _disconnectGoogle() async {
     await GoogleCalendarService.signOut();
@@ -727,7 +962,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     });
     _showSyncMessage('Berhasil disconnect dari Google Calendar');
   }
- 
+
   // Ambil events dari Google Calendar
   Future<void> _loadGoogleEvents() async {
     if (!_isGCalConnected) return;
@@ -741,7 +976,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       _showSyncMessage('Gagal memuat Google Calendar: $e');
     }
   }
- 
+
   // Sync SATU task ke Google Calendar
   Future<void> _syncTaskToGoogle(TaskModel task) async {
     if (!_isGCalConnected) {
@@ -752,60 +987,79 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       _showSyncMessage('Task harus punya due date untuk di-sync');
       return;
     }
- 
+
     setState(() => _isGCalLoading = true);
     try {
       final eventId = await GoogleCalendarService.addTaskToCalendar(task);
+      if (eventId != null) {
+        // Simpan eventId ke dalam task supaya bisa di-update/delete nanti
+        final updatedTask = task.copyWith(calendarEventId: eventId);
+        widget.onUpdateTask(updatedTask);
+      }
       _showSyncMessage('✅ "${task.title}" berhasil di-sync ke Google Calendar');
-      await _loadGoogleEvents(); // refresh
+      await _loadGoogleEvents();
     } catch (e) {
       _showSyncMessage('❌ Gagal sync: $e');
     } finally {
       setState(() => _isGCalLoading = false);
     }
   }
- 
+
   // Sync SEMUA task ke Google Calendar
   Future<void> _syncAllTasks() async {
     if (!_isGCalConnected) return;
- 
+
     final tasksWithDate = widget.tasks.where((t) => t.dueDate != null).toList();
     if (tasksWithDate.isEmpty) {
       _showSyncMessage('Tidak ada task dengan due date untuk di-sync');
       return;
     }
- 
+
     setState(() => _isGCalLoading = true);
     int success = 0;
- 
+
     for (final task in tasksWithDate) {
       try {
-        await GoogleCalendarService.addTaskToCalendar(task);
+        // Skip kalau task sudah punya calendarEventId (sudah pernah di-sync)
+        if (task.calendarEventId != null) continue;
+        final eventId = await GoogleCalendarService.addTaskToCalendar(task);
+        if (eventId != null) {
+          final updatedTask = task.copyWith(calendarEventId: eventId);
+          widget.onUpdateTask(updatedTask);
+        }
         success++;
       } catch (e) {
         // lanjut ke task berikutnya
       }
     }
- 
+
     await _loadGoogleEvents();
     setState(() => _isGCalLoading = false);
-    _showSyncMessage('✅ $success/${tasksWithDate.length} task berhasil di-sync');
+    _showSyncMessage(
+        '✅ $success/${tasksWithDate.length} task berhasil di-sync');
   }
- 
+
   // Import event Google Calendar → TaskFlow
   Future<void> _importFromGoogle(gcal.Event event) async {
     final task = GoogleCalendarService.eventToTask(event);
+    // Cek apakah task dengan ID ini sudah ada
+    final alreadyExists = widget.tasks.any((t) => t.id == task.id);
+    if (alreadyExists) {
+      _showSyncMessage('⚠️ "${event.summary}" sudah ada di TaskFlow');
+      return;
+    }
+    // Kalau belum ada, tambahkan sebagai task baru
     widget.onUpdateTask(task);
     _showSyncMessage('✅ "${event.summary}" berhasil diimport ke TaskFlow');
   }
- 
+
   void _showSyncMessage(String msg) {
     setState(() => _syncMessage = msg);
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) setState(() => _syncMessage = null);
     });
   }
- 
+
   // ── Filter tasks untuk tanggal yang dipilih ──────────
   List<TaskModel> get _filteredLocalTasks {
     return widget.tasks.where((t) {
@@ -814,11 +1068,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           t.dueDate!.month == _selectedDate.month &&
           t.dueDate!.day == _selectedDate.day;
       if (!sameDay) return false;
-      if (_selectedProject == 'All Project' || _selectedProject == 'Google Calendar') return true;
+      if (_selectedProject == 'All Project' ||
+          _selectedProject == 'Google Calendar') return true;
       return t.projectName == _selectedProject;
     }).toList();
   }
- 
+
   // Filter Google Calendar events untuk tanggal yang dipilih
   List<gcal.Event> get _filteredGCalEvents {
     if (!_isGCalConnected || !_showGCalEvents) return [];
@@ -835,7 +1090,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           eventDate.day == _selectedDate.day;
     }).toList();
   }
- 
+
   // Cek apakah tanggal tertentu punya task/event
   bool _hasTaskOnDate(DateTime date) {
     final hasLocal = widget.tasks.any((t) =>
@@ -843,25 +1098,38 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         t.dueDate!.year == date.year &&
         t.dueDate!.month == date.month &&
         t.dueDate!.day == date.day);
- 
+
     final hasGCal = _googleEvents.any((e) {
       DateTime? d;
-      if (e.start?.dateTime != null) d = e.start!.dateTime!.toLocal();
+      if (e.start?.dateTime != null)
+        d = e.start!.dateTime!.toLocal();
       else if (e.start?.date != null) d = e.start!.date;
       if (d == null) return false;
       return d.year == date.year && d.month == date.month && d.day == date.day;
     });
- 
+
     return hasLocal || hasGCal;
   }
- 
+
   @override
   Widget build(BuildContext context) {
-    final months = ['January','February','March','April','May','June',
-        'July','August','September','October','November','December'];
+    final months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
+    ];
     final month = months[_selectedDate.month - 1];
     final now = DateTime.now();
- 
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -869,11 +1137,24 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.menu, color: Colors.black),
-          onPressed: () {},
+          onPressed: () => showModalBottomSheet(
+            context: context,
+            isScrollControlled: true,
+            backgroundColor: Colors.transparent,
+            builder: (_) => _DrawerMenu(
+              tasks: widget.tasks,
+              onTabChange: widget.onTabChange,
+              onDeleteAll: widget.onDeleteAll,
+              currentIndex: 1,
+              photoPath: widget.photoPath,
+            ),
+          ),
         ),
         title: const Text('Schedule',
             style: TextStyle(
-                color: Colors.black, fontWeight: FontWeight.w700, fontSize: 18)),
+                color: Colors.black,
+                fontWeight: FontWeight.w700,
+                fontSize: 18)),
         centerTitle: true,
         actions: [
           // Tombol sync Google Calendar
@@ -881,7 +1162,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             IconButton(
               icon: _isGCalLoading
                   ? const SizedBox(
-                      width: 18, height: 18,
+                      width: 18,
+                      height: 18,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Color(0xFF4CAF8D)))
                   : const Icon(Icons.sync, color: Color(0xFF4CAF8D)),
@@ -893,7 +1175,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             child: CircleAvatar(
               radius: 17,
               backgroundColor: const Color(0xFFE8B89A),
-              child: const Icon(Icons.person, color: Colors.white, size: 18),
+              backgroundImage: widget.photoPath != null
+                  ? FileImage(File(widget.photoPath!))
+                  : null,
+              child: widget.photoPath == null
+                  ? const Icon(Icons.person, color: Colors.white, size: 18)
+                  : null,
             ),
           ),
         ],
@@ -902,7 +1189,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         children: [
           // ── Google Calendar Banner ──────────────────
           _buildGCalBanner(),
- 
+
           // ── Sync message ────────────────────────────
           if (_syncMessage != null)
             AnimatedContainer(
@@ -911,7 +1198,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               color: const Color(0xFFEDF7F3),
               child: Row(children: [
-                const Icon(Icons.info_outline, size: 16, color: Color(0xFF4CAF8D)),
+                const Icon(Icons.info_outline,
+                    size: 16, color: Color(0xFF4CAF8D)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(_syncMessage!,
@@ -920,7 +1208,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                 ),
               ]),
             ),
- 
+
           // ── Filter ──────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -929,10 +1217,11 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                 value: month,
                 items: months,
                 onChanged: (v) {
-                  if (v != null) setState(() {
-                    _selectedDate = DateTime(
-                        _selectedDate.year, months.indexOf(v) + 1, _selectedDate.day);
-                  });
+                  if (v != null)
+                    setState(() {
+                      _selectedDate = DateTime(_selectedDate.year,
+                          months.indexOf(v) + 1, _selectedDate.day);
+                    });
                 },
               ),
               const SizedBox(width: 10),
@@ -946,9 +1235,11 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                 const Spacer(),
                 // Toggle tampilkan Google Calendar events
                 GestureDetector(
-                  onTap: () => setState(() => _showGCalEvents = !_showGCalEvents),
+                  onTap: () =>
+                      setState(() => _showGCalEvents = !_showGCalEvents),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
                       color: _showGCalEvents
                           ? const Color(0xFF4285F4).withOpacity(0.1)
@@ -958,9 +1249,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Image.network(
                         'https://www.gstatic.com/images/branding/product/1x/calendar_2020q4_48dp.png',
-                        width: 16, height: 16,
+                        width: 16,
+                        height: 16,
                         errorBuilder: (_, __, ___) => const Icon(
-                            Icons.calendar_month, size: 16, color: Color(0xFF4285F4)),
+                            Icons.calendar_month,
+                            size: 16,
+                            color: Color(0xFF4285F4)),
                       ),
                       const SizedBox(width: 4),
                       Text(_showGCalEvents ? 'ON' : 'OFF',
@@ -976,9 +1270,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               ],
             ]),
           ),
- 
+
           const SizedBox(height: 16),
- 
+
           // ── Date picker ─────────────────────────────
           SizedBox(
             height: 72,
@@ -987,14 +1281,23 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: 30,
               itemBuilder: (_, i) {
-                final date = now.subtract(const Duration(days: 3))
+                final date = now
+                    .subtract(const Duration(days: 3))
                     .add(Duration(days: i));
                 final isSelected = date.year == _selectedDate.year &&
                     date.month == _selectedDate.month &&
                     date.day == _selectedDate.day;
                 final hasTask = _hasTaskOnDate(date);
-                final dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
- 
+                final dayNames = [
+                  'Mon',
+                  'Tue',
+                  'Wed',
+                  'Thu',
+                  'Fri',
+                  'Sat',
+                  'Sun'
+                ];
+
                 return GestureDetector(
                   onTap: () => setState(() => _selectedDate = date),
                   child: AnimatedContainer(
@@ -1015,41 +1318,42 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                     child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                      Text('${date.day}',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w700, fontSize: 20)),
-                      Text(dayNames[date.weekday - 1],
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.black54)),
-                      // Titik indikator ada task
-                      if (hasTask)
-                        Container(
-                          width: 5, height: 5,
-                          margin: const EdgeInsets.only(top: 2),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? Colors.black45
-                                : const Color(0xFF4CAF8D),
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                    ]),
+                          Text('${date.day}',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 20)),
+                          Text(dayNames[date.weekday - 1],
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.black54)),
+                          // Titik indikator ada task
+                          if (hasTask)
+                            Container(
+                              width: 5,
+                              height: 5,
+                              margin: const EdgeInsets.only(top: 2),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? Colors.black45
+                                    : const Color(0xFF4CAF8D),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                        ]),
                   ),
                 );
               },
             ),
           ),
- 
+
           const SizedBox(height: 8),
           const Divider(height: 1, color: Colors.black12),
- 
+
           // ── Timeline ────────────────────────────────
           Expanded(
             child: (_filteredLocalTasks.isEmpty && _filteredGCalEvents.isEmpty)
                 ? _emptyState()
                 : ListView(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     children: _buildTimeline(),
                   ),
           ),
@@ -1057,7 +1361,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       ),
     );
   }
- 
+
   // ── Google Calendar connection banner ───────────────
   Widget _buildGCalBanner() {
     if (_isGCalConnected) {
@@ -1073,14 +1377,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           const Icon(Icons.check_circle, color: Color(0xFF4CAF8D), size: 18),
           const SizedBox(width: 8),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('Terhubung ke Google Calendar',
                   style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                       color: Color(0xFF2E7D5E))),
               Text(GoogleCalendarService.userEmail ?? '',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF4CAF8D))),
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFF4CAF8D))),
             ]),
           ),
           TextButton(
@@ -1093,7 +1399,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         ]),
       );
     }
- 
+
     // Belum terhubung
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
@@ -1110,7 +1416,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         const Icon(Icons.calendar_month, color: Colors.white, size: 22),
         const SizedBox(width: 10),
         const Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Sync dengan Google Calendar',
                 style: TextStyle(
                     color: Colors.white,
@@ -1126,13 +1433,14 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             backgroundColor: Colors.white,
             foregroundColor: const Color(0xFF4285F4),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             minimumSize: const Size(0, 0),
           ),
           child: _isGCalLoading
               ? const SizedBox(
-                  width: 14, height: 14,
+                  width: 14,
+                  height: 14,
                   child: CircularProgressIndicator(
                       strokeWidth: 2, color: Color(0xFF4285F4)))
               : const Text('Hubungkan',
@@ -1141,19 +1449,19 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       ]),
     );
   }
- 
+
   // ── Build timeline dengan local tasks + Google events ─
   List<Widget> _buildTimeline() {
     final hours = List.generate(15, (i) => i + 7); // 07:00 - 21:00
     final widgets = <Widget>[];
- 
+
     for (final hour in hours) {
       // Local tasks untuk jam ini
       final localTasks = _filteredLocalTasks.where((t) {
         if (t.reminderTime != null) return t.reminderTime!.hour == hour;
         return t.dueDate?.hour == hour;
       }).toList();
- 
+
       // Google Calendar events untuk jam ini
       final gcalEvents = _filteredGCalEvents.where((e) {
         if (e.start?.dateTime != null) {
@@ -1161,7 +1469,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         }
         return hour == 8; // all-day events tampil di jam 8
       }).toList();
- 
+
       if (localTasks.isEmpty && gcalEvents.isEmpty) {
         // Baris kosong lebih kecil
         widgets.add(Padding(
@@ -1183,7 +1491,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         ));
         continue;
       }
- 
+
       widgets.add(Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1204,17 +1512,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               const SizedBox(height: 6),
               // Local tasks
               ...localTasks.map((t) => _LocalTaskCard(
-                task: t,
-                onTap: () => widget.onAddTask(existing: t),
-                onSync: _isGCalConnected
-                    ? () => _syncTaskToGoogle(t)
-                    : null,
-              )),
+                    task: t,
+                    onTap: () => widget.onAddTask(existing: t),
+                    onSync:
+                        _isGCalConnected ? () => _syncTaskToGoogle(t) : null,
+                  )),
               // Google Calendar events
               ...gcalEvents.map((e) => _GCalEventCard(
-                event: e,
-                onImport: () => _importFromGoogle(e),
-              )),
+                    event: e,
+                    onImport: () => _importFromGoogle(e),
+                  )),
             ]),
           ),
         ]),
@@ -1222,7 +1529,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     }
     return widgets;
   }
- 
+
   Widget _emptyState() {
     return Center(
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -1239,7 +1546,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     );
   }
 }
- 
+
 // ─────────────────────────────────────────
 //  LOCAL TASK CARD (dengan tombol sync)
 // ─────────────────────────────────────────
@@ -1247,22 +1554,26 @@ class _LocalTaskCard extends StatelessWidget {
   final TaskModel task;
   final VoidCallback onTap;
   final VoidCallback? onSync;
- 
+
   const _LocalTaskCard({
     required this.task,
     required this.onTap,
     this.onSync,
   });
- 
+
   Color get _cardColor {
     switch (task.priority) {
-      case TaskPriority.low: return const Color(0xFFE8F5E9);
-      case TaskPriority.medium: return const Color(0xFFFFF9C4);
-      case TaskPriority.high: return const Color(0xFFFFEBEE);
-      case TaskPriority.urgent: return const Color(0xFFF3E5F5);
+      case TaskPriority.low:
+        return const Color(0xFFE8F5E9);
+      case TaskPriority.medium:
+        return const Color(0xFFFFF9C4);
+      case TaskPriority.high:
+        return const Color(0xFFFFEBEE);
+      case TaskPriority.urgent:
+        return const Color(0xFFF3E5F5);
     }
   }
- 
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -1277,7 +1588,8 @@ class _LocalTaskCard extends StatelessWidget {
         ),
         child: Row(children: [
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(task.title,
                   style: const TextStyle(
                       fontWeight: FontWeight.w700, fontSize: 13)),
@@ -1286,8 +1598,8 @@ class _LocalTaskCard extends StatelessWidget {
                 Text(task.description,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.black54, fontSize: 12)),
+                    style:
+                        const TextStyle(color: Colors.black54, fontSize: 12)),
               ],
               if (task.reminderTime != null) ...[
                 const SizedBox(height: 4),
@@ -1296,8 +1608,7 @@ class _LocalTaskCard extends StatelessWidget {
                   const SizedBox(width: 3),
                   Text(
                     '${task.reminderTime!.hour.toString().padLeft(2, '0')}:${task.reminderTime!.minute.toString().padLeft(2, '0')}',
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.black45),
+                    style: const TextStyle(fontSize: 11, color: Colors.black45),
                   ),
                 ]),
               ],
@@ -1313,8 +1624,8 @@ class _LocalTaskCard extends StatelessWidget {
                   color: Colors.white.withOpacity(0.7),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(Icons.sync,
-                    size: 16, color: Color(0xFF4285F4)),
+                child:
+                    const Icon(Icons.sync, size: 16, color: Color(0xFF4285F4)),
               ),
             ),
         ]),
@@ -1322,16 +1633,16 @@ class _LocalTaskCard extends StatelessWidget {
     );
   }
 }
- 
+
 // ─────────────────────────────────────────
 //  GOOGLE CALENDAR EVENT CARD
 // ─────────────────────────────────────────
 class _GCalEventCard extends StatelessWidget {
   final gcal.Event event;
   final VoidCallback onImport;
- 
+
   const _GCalEventCard({required this.event, required this.onImport});
- 
+
   String get _timeLabel {
     if (event.start?.dateTime != null) {
       final dt = event.start!.dateTime!.toLocal();
@@ -1347,7 +1658,7 @@ class _GCalEventCard extends StatelessWidget {
     }
     return 'All Day';
   }
- 
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1357,8 +1668,7 @@ class _GCalEventCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFE8F0FE),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-            color: const Color(0xFF4285F4).withOpacity(0.3)),
+        border: Border.all(color: const Color(0xFF4285F4).withOpacity(0.3)),
       ),
       child: Row(children: [
         // Google icon indicator
@@ -1372,7 +1682,8 @@ class _GCalEventCard extends StatelessWidget {
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               const Icon(Icons.calendar_month,
                   size: 12, color: Color(0xFF4285F4)),
@@ -1396,8 +1707,7 @@ class _GCalEventCard extends StatelessWidget {
               const Icon(Icons.access_time, size: 11, color: Colors.black38),
               const SizedBox(width: 3),
               Text(_timeLabel,
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.black45)),
+                  style: const TextStyle(fontSize: 11, color: Colors.black45)),
             ]),
           ]),
         ),
@@ -1411,8 +1721,7 @@ class _GCalEventCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
             ),
             child: const Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.download_outlined,
-                  size: 13, color: Color(0xFF4285F4)),
+              Icon(Icons.download_outlined, size: 13, color: Color(0xFF4285F4)),
               SizedBox(width: 3),
               Text('Import',
                   style: TextStyle(
@@ -1426,7 +1735,7 @@ class _GCalEventCard extends StatelessWidget {
     );
   }
 }
- 
+
 // ─────────────────────────────────────────
 //  FILTER DROPDOWN
 // ─────────────────────────────────────────
@@ -1434,13 +1743,13 @@ class _FilterDropdown extends StatelessWidget {
   final String value;
   final List<String> items;
   final Function(String?) onChanged;
- 
+
   const _FilterDropdown({
     required this.value,
     required this.items,
     required this.onChanged,
   });
- 
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1459,9 +1768,7 @@ class _FilterDropdown extends StatelessWidget {
             .toList(),
         onChanged: onChanged,
         style: const TextStyle(
-            color: Colors.black,
-            fontSize: 13,
-            fontWeight: FontWeight.w500),
+            color: Colors.black, fontSize: 13, fontWeight: FontWeight.w500),
       ),
     );
   }
@@ -1470,8 +1777,38 @@ class _FilterDropdown extends StatelessWidget {
 // ─────────────────────────────────────────
 //  PROFILE SCREEN
 // ─────────────────────────────────────────
-class ProfileScreen extends StatelessWidget {
-  const ProfileScreen({Key? key}) : super(key: key);
+class ProfileScreen extends StatefulWidget {
+  final List<TaskModel> tasks;
+  final VoidCallback onDeleteAll;
+  final Function(String?) onPhotoChanged;
+  const ProfileScreen(
+      {Key? key,
+      required this.tasks,
+      required this.onDeleteAll,
+      required this.onPhotoChanged})
+      : super(key: key);
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  String _name = 'Itonk';
+  String? _photoPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _name = prefs.getString('profileName') ?? 'Itonk';
+      _photoPath = prefs.getString('profilePhoto');
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1481,56 +1818,84 @@ class ProfileScreen extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: const Text('Profile',
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w700, fontSize: 18)),
+            style: TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.w700,
+                fontSize: 18)),
         centerTitle: true,
       ),
       body: ListView(
         children: [
-          // Header profil
           Container(
             color: Colors.white,
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             child: Column(children: [
               Stack(
                 children: [
-                  const CircleAvatar(
+                  CircleAvatar(
                     radius: 44,
-                    backgroundColor: Color(0xFFE8B89A),
-                    child: Icon(Icons.person, size: 44, color: Colors.white),
+                    backgroundColor: const Color(0xFFE8B89A),
+                    backgroundImage: _photoPath != null
+                        ? FileImage(File(_photoPath!))
+                        : null,
+                    child: _photoPath == null
+                        ? const Icon(Icons.person,
+                            size: 44, color: Colors.white)
+                        : null,
                   ),
                   Positioned(
-                    bottom: 0, right: 0,
-                    child: Container(
-                      width: 26, height: 26,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF4CAF8D), shape: BoxShape.circle,
+                    bottom: 0,
+                    right: 0,
+                    child: GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => EditProfilePage(
+                            currentName: _name,
+                            currentPhotoPath: _photoPath,
+                            onSave: (name, photo) {
+                              setState(() {
+                                _name = name;
+                                _photoPath = photo;
+                              });
+                              widget.onPhotoChanged(photo);
+                            },
+                          ),
+                        ),
                       ),
-                      child: const Icon(Icons.edit, size: 14, color: Colors.white),
+                      child: Container(
+                        width: 26,
+                        height: 26,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF4CAF8D),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.edit,
+                            size: 14, color: Colors.white),
+                      ),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              const Text('Itonk',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20)),
-              const SizedBox(height: 4),
-              // const Text('l200230129@student.ums.ac.id',
-              //     style: TextStyle(color: Colors.black45, fontSize: 14)),
-              // const SizedBox(height: 16),
-              // Stats row
-              // Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-              //   _statItem('12', 'Total Task'),
-              //   Container(width: 1, height: 32, color: Colors.black12),
-              //   _statItem('8', 'Selesai'),
-              //   Container(width: 1, height: 32, color: Colors.black12),
-              //   _statItem('4', 'Aktif'),
-              // ]),
+              Text(_name,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w700, fontSize: 20)),
+              const SizedBox(height: 16),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                _statItem('${widget.tasks.length}', 'Total Task'),
+                Container(width: 1, height: 32, color: Colors.black12),
+                _statItem(
+                    '${widget.tasks.where((t) => t.status == TaskStatus.done).length}',
+                    'Selesai'),
+                Container(width: 1, height: 32, color: Colors.black12),
+                _statItem(
+                    '${widget.tasks.where((t) => t.status != TaskStatus.done).length}',
+                    'Aktif'),
+              ]),
             ]),
           ),
-
           const SizedBox(height: 16),
-
-          // Menu
           Container(
             color: Colors.white,
             child: Column(children: [
@@ -1538,10 +1903,14 @@ class ProfileScreen extends StatelessWidget {
                 context,
                 Icons.settings_outlined,
                 'Settings',
-                'Tampilan, bahasa, dan preferensi',
+                'Preferensi dan data',
                 const Color(0xFF4CAF8D),
-                () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const SettingsPage())),
+                () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => SettingsPage(
+                              onDeleteAll: widget.onDeleteAll,
+                            ))),
               ),
               const Divider(height: 1, indent: 66),
               _profileTile(
@@ -1550,8 +1919,10 @@ class ProfileScreen extends StatelessWidget {
                 'Notifications',
                 'Atur pengingat dan notifikasi',
                 const Color(0xFFFFB74D),
-                () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const NotificationsPage())),
+                () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const NotificationsPage())),
               ),
               const Divider(height: 1, indent: 66),
               _profileTile(
@@ -1563,18 +1934,8 @@ class ProfileScreen extends StatelessWidget {
                 () => Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const HelpSupportPage())),
               ),
-              // const Divider(height: 1, indent: 66),
-              // _profileTile(
-              //   context,
-              //   Icons.logout,
-              //   'Log Out',
-              //   'Keluar dari akun',
-              //   const Color(0xFFEF5350),
-              //   () => _showLogoutDialog(context),
-              // ),
             ]),
           ),
-
           const SizedBox(height: 32),
           const Center(
             child: Text('TaskFlow v1.0.0',
@@ -1589,7 +1950,10 @@ class ProfileScreen extends StatelessWidget {
   Widget _statItem(String value, String label) {
     return Column(children: [
       Text(value,
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 22, color: Color(0xFF4CAF8D))),
+          style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 22,
+              color: Color(0xFF4CAF8D))),
       const SizedBox(height: 2),
       Text(label, style: const TextStyle(color: Colors.black45, fontSize: 12)),
     ]);
@@ -1605,39 +1969,20 @@ class ProfileScreen extends StatelessWidget {
   ) {
     return ListTile(
       leading: Container(
-        width: 38, height: 38,
+        width: 38,
+        height: 38,
         decoration: BoxDecoration(
           color: color.withOpacity(0.12),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Icon(icon, color: color, size: 18),
       ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15)),
-      subtitle: Text(subtitle, style: const TextStyle(color: Colors.black38, fontSize: 12)),
+      title: Text(title,
+          style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15)),
+      subtitle: Text(subtitle,
+          style: const TextStyle(color: Colors.black38, fontSize: 12)),
       trailing: const Icon(Icons.chevron_right, color: Colors.black26),
       onTap: onTap,
-    );
-  }
-
-  void _showLogoutDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Log Out?'),
-        content: const Text('Kamu akan keluar dari aplikasi TaskFlow.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Log Out', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1659,7 +2004,8 @@ class _BottomNav extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.06),
-            blurRadius: 12, offset: const Offset(0, -2),
+            blurRadius: 12,
+            offset: const Offset(0, -2),
           ),
         ],
       ),
@@ -1684,7 +2030,8 @@ class _BottomNav extends StatelessWidget {
     return GestureDetector(
       onTap: () => onTap(index),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 24,
+        Icon(icon,
+            size: 24,
             color: isActive ? const Color(0xFF4CAF8D) : Colors.black38),
         const SizedBox(height: 4),
         Text(label,

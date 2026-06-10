@@ -32,6 +32,7 @@ class TaskModel {
   DateTime createdAt;
   List<String> assignees;
   String? projectName;
+  String? calendarEventId;
 
   TaskModel({
     required this.id,
@@ -48,13 +49,15 @@ class TaskModel {
     required this.createdAt,
     this.assignees = const [],
     this.projectName,
+    this.calendarEventId,
   });
 
   TaskModel copyWith({
     String? id, String? title, String? description, TaskStatus? status,
     TaskPriority? priority, DateTime? dueDate, TimeOfDay? reminderTime,
     bool? hasReminder, List<SubTask>? subtasks, List<String>? attachments,
-    RecurringType? recurringType, DateTime? createdAt, List<String>? assignees, String? projectName,
+    RecurringType? recurringType, DateTime? createdAt, List<String>? assignees, String? projectName, 
+    String? calendarEventId,
   }) {
     return TaskModel(
       id: id ?? this.id, title: title ?? this.title, description: description ?? this.description,
@@ -62,7 +65,8 @@ class TaskModel {
       reminderTime: reminderTime ?? this.reminderTime, hasReminder: hasReminder ?? this.hasReminder,
       subtasks: subtasks ?? this.subtasks, attachments: attachments ?? this.attachments,
       recurringType: recurringType ?? this.recurringType, createdAt: createdAt ?? this.createdAt,
-      assignees: assignees ?? this.assignees, projectName: projectName ?? this.projectName,
+      assignees: assignees ?? this.assignees, projectName: projectName ?? this.projectName, 
+      calendarEventId: calendarEventId ?? this.calendarEventId,
     );
   }
 
@@ -74,6 +78,7 @@ class TaskModel {
     'subtasks': subtasks.map((s) => s.toMap()).toList(),
     'attachments': attachments, 'recurringType': recurringType.index,
     'createdAt': createdAt.toIso8601String(), 'assignees': assignees, 'projectName': projectName,
+    'calendarEventId': calendarEventId,
   };
 
   factory TaskModel.fromMap(Map<String, dynamic> map) => TaskModel(
@@ -88,6 +93,7 @@ class TaskModel {
     recurringType: RecurringType.values[map['recurringType'] ?? 0],
     createdAt: DateTime.parse(map['createdAt']),
     assignees: List<String>.from(map['assignees'] ?? []), projectName: map['projectName'],
+    calendarEventId: map['calendarEventId'],
   );
 
   String toJson() => jsonEncode(toMap());

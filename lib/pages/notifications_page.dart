@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({Key? key}) : super(key: key);
@@ -14,6 +15,29 @@ class _NotificationsPageState extends State<NotificationsPage> {
   bool _overdueNotif = false;
   bool _dailySummary = false;
   String _reminderBefore = '30 menit';
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _pushNotif = prefs.getBool('pushNotif') ?? true;
+      _reminderNotif = prefs.getBool('reminderNotif') ?? true;
+      _dueDateNotif = prefs.getBool('dueDateNotif') ?? true;
+      _overdueNotif = prefs.getBool('overdueNotif') ?? false;
+      _dailySummary = prefs.getBool('dailySummary') ?? false;
+      _reminderBefore = prefs.getString('reminderBefore') ?? '30 menit';
+    });
+  }
+
+  Future<void> _saveSetting(String key, dynamic value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value is bool) prefs.setBool(key, value);
+    if (value is String) prefs.setString(key, value);
+  }
 
   // Simulasi data notifikasi masuk
   final List<Map<String, dynamic>> _notifications = [
@@ -97,7 +121,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Push Notification',
               subtitle: 'Aktifkan semua notifikasi',
               value: _pushNotif,
-              onChanged: (v) => setState(() => _pushNotif = v),
+              onChanged: (v) {
+                setState(() => _pushNotif = v);
+                _saveSetting('pushNotif', v);
+              },
             ),
             const Divider(height: 1, indent: 56),
             _switchTile(
@@ -106,7 +133,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Reminder Task',
               subtitle: 'Ingatkan sebelum batas waktu',
               value: _reminderNotif,
-              onChanged: (v) => setState(() => _reminderNotif = v),
+              onChanged: (v) {
+                setState(() => _reminderNotif = v);
+                _saveSetting('reminderNotif', v);
+              },
             ),
             const Divider(height: 1, indent: 56),
             _dropdownTile(
@@ -115,7 +145,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Ingatkan sebelum',
               value: _reminderBefore,
               items: ['15 menit', '30 menit', '1 jam', '2 jam', '1 hari'],
-              onChanged: (v) => setState(() => _reminderBefore = v!),
+              onChanged: (v) {
+                setState(() => _reminderBefore = v!);
+                _saveSetting('reminderBefore', v!);
+              },
             ),
             const Divider(height: 1, indent: 56),
             _switchTile(
@@ -124,7 +157,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Notifikasi Due Date',
               subtitle: 'Ingatkan saat hari H',
               value: _dueDateNotif,
-              onChanged: (v) => setState(() => _dueDateNotif = v),
+              onChanged: (v) {
+                setState(() => _dueDateNotif = v);
+                _saveSetting('dueDateNotif', v);
+              },
             ),
             const Divider(height: 1, indent: 56),
             _switchTile(
@@ -133,7 +169,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Notifikasi Overdue',
               subtitle: 'Ingatkan saat task terlambat',
               value: _overdueNotif,
-              onChanged: (v) => setState(() => _overdueNotif = v),
+              onChanged: (v) {
+                setState(() => _overdueNotif = v);
+                _saveSetting('overdueNotif', v);
+              },
             ),
             const Divider(height: 1, indent: 56),
             _switchTile(
@@ -142,7 +181,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
               title: 'Ringkasan Harian',
               subtitle: 'Kirim ringkasan tugas setiap pagi',
               value: _dailySummary,
-              onChanged: (v) => setState(() => _dailySummary = v),
+              onChanged: (v) {
+                setState(() => _dailySummary = v);
+                _saveSetting('dailySummary', v);
+              },
             ),
           ]),
 
@@ -155,7 +197,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
               if (unreadCount > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
                     color: const Color(0xFF4CAF8D),
                     borderRadius: BorderRadius.circular(10),
@@ -228,23 +271,20 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     n['title'],
                     style: TextStyle(
                       fontSize: 13,
-                      fontWeight: n['isRead']
-                          ? FontWeight.w500
-                          : FontWeight.w700,
+                      fontWeight:
+                          n['isRead'] ? FontWeight.w500 : FontWeight.w700,
                       color: Colors.black,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     n['subtitle'],
-                    style: const TextStyle(
-                        fontSize: 12, color: Colors.black54),
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     n['time'],
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.black38),
+                    style: const TextStyle(fontSize: 11, color: Colors.black38),
                   ),
                 ],
               ),
@@ -307,7 +347,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }) {
     return ListTile(
       leading: Container(
-        width: 36, height: 36,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
           color: iconColor.withOpacity(0.12),
           borderRadius: BorderRadius.circular(9),
@@ -337,7 +378,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }) {
     return ListTile(
       leading: Container(
-        width: 36, height: 36,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
           color: iconColor.withOpacity(0.12),
           borderRadius: BorderRadius.circular(9),

@@ -1,17 +1,42 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+// import '../main.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({Key? key}) : super(key: key);
+  final VoidCallback onDeleteAll;
+  const SettingsPage({Key? key, required this.onDeleteAll}) : super(key: key);
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  bool _darkMode = false;
-  bool _compactView = false;
-  String _language = 'Indonesia';
+  // bool _darkMode = false;
+  // bool _compactView = false;
+  // String _language = 'Indonesia';
   String _defaultPriority = 'Medium';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      // _darkMode = prefs.getBool('darkMode') ?? false;
+      // _compactView = prefs.getBool('compactView') ?? false;
+      // _language = prefs.getString('language') ?? 'Indonesia';
+      _defaultPriority = prefs.getString('defaultPriority') ?? 'Medium';
+    });
+  }
+
+  Future<void> _saveSetting(String key, dynamic value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value is bool) prefs.setBool(key, value);
+    if (value is String) prefs.setString(key, value);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -35,48 +60,61 @@ class _SettingsPageState extends State<SettingsPage> {
         padding: const EdgeInsets.all(16),
         children: [
           // ── SECTION: Tampilan ──
-          _sectionHeader('Tampilan'),
-          _settingsCard([
-            _switchTile(
-              icon: Icons.dark_mode_outlined,
-              iconColor: const Color(0xFF5C6BC0),
-              title: 'Dark Mode',
-              subtitle: 'Ubah tema ke gelap',
-              value: _darkMode,
-              onChanged: (v) => setState(() => _darkMode = v),
-            ),
-            const Divider(height: 1, indent: 56),
-            _switchTile(
-              icon: Icons.view_compact_outlined,
-              iconColor: const Color(0xFF26A69A),
-              title: 'Tampilan Kompak',
-              subtitle: 'Perkecil ukuran kartu tugas',
-              value: _compactView,
-              onChanged: (v) => setState(() => _compactView = v),
-            ),
-          ]),
+          // _sectionHeader('Tampilan'),
+          // _settingsCard([
+          //   _switchTile(
+          //     icon: Icons.dark_mode_outlined,
+          //     iconColor: const Color(0xFF5C6BC0),
+          //     title: 'Dark Mode',
+          //     subtitle: 'Ubah tema ke gelap',
+          //     value: _darkMode,
+          //     onChanged: (v) {
+          //       setState(() => _darkMode = v);
+          //       _saveSetting('darkMode', v);
+          //       TodoApp.of(context)?.setTheme(v);
+          //     },
+          //   ),
+          //   const Divider(height: 1, indent: 56),
+          //   _switchTile(
+          //     icon: Icons.view_compact_outlined,
+          //     iconColor: const Color(0xFF26A69A),
+          //     title: 'Tampilan Kompak',
+          //     subtitle: 'Perkecil ukuran kartu tugas',
+          //     value: _compactView,
+          //     onChanged: (v) {
+          //       setState(() => _compactView = v);
+          //       _saveSetting('compactView', v);
+          //     },
+          //   ),
+          // ]),
 
-          const SizedBox(height: 16),
+          // const SizedBox(height: 16),
 
           // ── SECTION: Preferensi ──
           _sectionHeader('Preferensi'),
           _settingsCard([
-            _dropdownTile(
-              icon: Icons.language_outlined,
-              iconColor: const Color(0xFF4CAF8D),
-              title: 'Bahasa',
-              value: _language,
-              items: ['Indonesia', 'English'],
-              onChanged: (v) => setState(() => _language = v!),
-            ),
-            const Divider(height: 1, indent: 56),
+            // _dropdownTile(
+            //   icon: Icons.language_outlined,
+            //   iconColor: const Color(0xFF4CAF8D),
+            //   title: 'Bahasa',
+            //   value: _language,
+            //   items: ['Indonesia', 'English'],
+            //   onChanged: (v) {
+            //     setState(() => _language = v!);
+            //     _saveSetting('language', v!);
+            //   },
+            // ),
+            // const Divider(height: 1, indent: 56),
             _dropdownTile(
               icon: Icons.flag_outlined,
               iconColor: const Color(0xFFFF7043),
               title: 'Prioritas Default',
               value: _defaultPriority,
               items: ['Low', 'Medium', 'High', 'Urgent'],
-              onChanged: (v) => setState(() => _defaultPriority = v!),
+              onChanged: (v) {
+                setState(() => _defaultPriority = v!);
+                _saveSetting('defaultPriority', v!);
+              },
             ),
           ]),
 
@@ -156,28 +194,28 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _switchTile({
-    required IconData icon,
-    required Color iconColor,
-    required String title,
-    required String subtitle,
-    required bool value,
-    required Function(bool) onChanged,
-  }) {
-    return ListTile(
-      leading: _iconBox(icon, iconColor),
-      title: Text(title,
-          style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14)),
-      subtitle: Text(subtitle,
-          style: const TextStyle(fontSize: 12, color: Colors.black45)),
-      trailing: Switch(
-        value: value,
-        onChanged: onChanged,
-        activeColor: const Color(0xFF4CAF8D),
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      ),
-    );
-  }
+  // Widget _switchTile({
+  //   required IconData icon,
+  //   required Color iconColor,
+  //   required String title,
+  //   required String subtitle,
+  //   required bool value,
+  //   required Function(bool) onChanged,
+  // }) {
+  //   return ListTile(
+  //     leading: _iconBox(icon, iconColor),
+  //     title: Text(title,
+  //         style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14)),
+  //     subtitle: Text(subtitle,
+  //         style: const TextStyle(fontSize: 12, color: Colors.black45)),
+  //     trailing: Switch(
+  //       value: value,
+  //       onChanged: onChanged,
+  //       activeColor: const Color(0xFF4CAF8D),
+  //       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  //     ),
+  //   );
+  // }
 
   Widget _dropdownTile({
     required IconData icon,
@@ -197,7 +235,8 @@ class _SettingsPageState extends State<SettingsPage> {
         underline: const SizedBox(),
         icon: const Icon(Icons.keyboard_arrow_down, size: 18),
         items: items
-            .map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 13))))
+            .map((e) => DropdownMenuItem(
+                value: e, child: Text(e, style: const TextStyle(fontSize: 13))))
             .toList(),
         onChanged: onChanged,
       ),
@@ -237,8 +276,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _showSnackbar(String msg) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _showDeleteConfirm() {
@@ -257,6 +295,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
+              widget.onDeleteAll();
               _showSnackbar('Semua task berhasil dihapus');
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
