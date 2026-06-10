@@ -92,6 +92,7 @@ class _MainScreenState extends State<MainScreen> {
   bool _isLoading = true;
 
   String? _photoPath;
+  String _userName = 'Your Name';
 
   @override
   void initState() {
@@ -100,13 +101,20 @@ class _MainScreenState extends State<MainScreen> {
     _loadPhoto();
   }
 
-  void _onPhotoChanged(String? path) {
-    setState(() => _photoPath = path);
+  void _onPhotoChanged(String? path) async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _photoPath = path;
+      _userName = prefs.getString('profileName') ?? 'Your Name';
+    });
   }
 
   Future<void> _loadPhoto() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() => _photoPath = prefs.getString('profilePhoto'));
+    setState(() {
+      _photoPath = prefs.getString('profilePhoto');
+      _userName = prefs.getString('profileName') ?? 'Your Name';
+    });
   }
 
   Future<void> _loadTasks() async {
@@ -213,6 +221,7 @@ class _MainScreenState extends State<MainScreen> {
             onTabChange: (index) => setState(() => _currentIndex = index),
             onDeleteAll: _deleteAllTasks,
             photoPath: _photoPath,
+            userName: _userName,
           ),
           ScheduleScreen(
             tasks: _tasks,
@@ -221,6 +230,7 @@ class _MainScreenState extends State<MainScreen> {
             onTabChange: (index) => setState(() => _currentIndex = index),
             onDeleteAll: _deleteAllTasks,
             photoPath: _photoPath,
+            userName: _userName,
           ),
           ProfileScreen(
             tasks: _tasks,
@@ -248,6 +258,7 @@ class BoardsScreen extends StatefulWidget {
   final Function(int) onTabChange;
   final VoidCallback onDeleteAll;
   final String? photoPath;
+  final String userName;
 
   const BoardsScreen({
     Key? key,
@@ -257,6 +268,7 @@ class BoardsScreen extends StatefulWidget {
     required this.onUpdateTask,
     required this.onTabChange,
     required this.onDeleteAll,
+    required this.userName,
     this.photoPath,
   }) : super(key: key);
 
@@ -431,6 +443,7 @@ class _BoardsScreenState extends State<BoardsScreen>
         onDeleteAll: widget.onDeleteAll,
         currentIndex: 0,
         photoPath: widget.photoPath,
+        userName: widget.userName,
       ),
     );
   }
@@ -445,11 +458,14 @@ class _DrawerMenu extends StatelessWidget {
   final VoidCallback onDeleteAll;
   final int currentIndex;
   final String? photoPath;
+  final String userName;
+
   const _DrawerMenu(
       {required this.tasks,
       required this.onTabChange,
       required this.onDeleteAll,
       required this.currentIndex,
+      required this.userName,
       this.photoPath});
 
   @override
@@ -605,8 +621,9 @@ class _DrawerMenu extends StatelessWidget {
                   ? const Icon(Icons.person, color: Colors.white, size: 18)
                   : null,
             ),
-            title: const Text('Itonk',
-                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+            title: Text(userName,
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
             // subtitle: const Text('your@email.com',
             //     style: TextStyle(color: Colors.black45, fontSize: 12)),
             // trailing: IconButton(
@@ -882,6 +899,7 @@ class ScheduleScreen extends StatefulWidget {
   final Function(int) onTabChange;
   final VoidCallback onDeleteAll;
   final String? photoPath;
+  final String userName;
 
   const ScheduleScreen({
     Key? key,
@@ -890,6 +908,7 @@ class ScheduleScreen extends StatefulWidget {
     required this.onUpdateTask,
     required this.onTabChange,
     required this.onDeleteAll,
+    required this.userName,
     this.photoPath,
   }) : super(key: key);
 
@@ -1147,6 +1166,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               onDeleteAll: widget.onDeleteAll,
               currentIndex: 1,
               photoPath: widget.photoPath,
+              userName: widget.userName,
             ),
           ),
         ),
