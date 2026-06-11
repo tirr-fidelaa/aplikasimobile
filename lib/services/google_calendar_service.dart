@@ -188,6 +188,7 @@ class GoogleCalendarService {
       recurringType: RecurringType.none,
       createdAt: event.created?.toLocal() ?? DateTime.now(),
       projectName: 'Google Calendar',
+      calendarEventId: event.id,
     );
   }
 

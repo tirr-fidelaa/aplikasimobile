@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/notification_service.dart';
+import '../services/task_services.dart';
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({Key? key}) : super(key: key);
@@ -31,49 +33,69 @@ class _NotificationsPageState extends State<NotificationsPage> {
       _dailySummary = prefs.getBool('dailySummary') ?? false;
       _reminderBefore = prefs.getString('reminderBefore') ?? '30 menit';
     });
+    await _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await NotificationService.getHistory();
+    setState(() => _notifications = history);
+  }
+
+  IconData _notifIcon(String type) {
+    switch (type) {
+      case 'reminder':
+        return Icons.alarm;
+      case 'duedate':
+        return Icons.calendar_today_outlined;
+      case 'overdue':
+        return Icons.warning_amber_rounded;
+      default:
+        return Icons.notifications_outlined;
+    }
+  }
+
+  Color _notifColor(String type) {
+    switch (type) {
+      case 'reminder':
+        return const Color(0xFFFFB74D);
+      case 'duedate':
+        return const Color(0xFF26A69A);
+      case 'overdue':
+        return const Color(0xFFEF5350);
+      default:
+        return const Color(0xFF42A5F5);
+    }
+  }
+
+  String _timeAgo(DateTime time) {
+    final diff = DateTime.now().difference(time);
+    if (diff.inMinutes < 1) return 'Baru saja';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} menit lalu';
+    if (diff.inHours < 24) return '${diff.inHours} jam lalu';
+    if (diff.inDays < 7) return '${diff.inDays} hari lalu';
+    return '${(diff.inDays / 7).floor()} minggu lalu';
   }
 
   Future<void> _saveSetting(String key, dynamic value) async {
     final prefs = await SharedPreferences.getInstance();
-    if (value is bool) prefs.setBool(key, value);
-    if (value is String) prefs.setString(key, value);
+    if (value is bool) await prefs.setBool(key, value);
+    if (value is String) await prefs.setString(key, value);
+    await _rescheduleTasks();
+  }
+
+  Future<void> _rescheduleTasks() async {
+    final prefs = await SharedPreferences.getInstance();
+    final pushNotif = prefs.getBool('pushNotif') ?? true;
+    if (pushNotif) {
+      final tasks = await TaskServices.loadTasks();
+      await NotificationService.rescheduleAll(tasks);
+    } else {
+      await NotificationService.cancelAll();
+    }
   }
 
   // Simulasi data notifikasi masuk
-  final List<Map<String, dynamic>> _notifications = [
-    {
-      'icon': Icons.alarm,
-      'color': const Color(0xFFFFB74D),
-      'title': 'Reminder: Research cashback payment',
-      'subtitle': 'Tugas ini jatuh tempo hari ini pukul 14:00',
-      'time': '2 jam lalu',
-      'isRead': false,
-    },
-    {
-      'icon': Icons.warning_amber_rounded,
-      'color': const Color(0xFFEF5350),
-      'title': 'Overdue: Update Report Sales',
-      'subtitle': 'Tugas ini sudah melewati batas waktu',
-      'time': '1 hari lalu',
-      'isRead': false,
-    },
-    {
-      'icon': Icons.check_circle_outline,
-      'color': const Color(0xFF4CAF8D),
-      'title': 'Task selesai: Cart payment page',
-      'subtitle': 'Kamu menyelesaikan 1 task hari ini',
-      'time': '2 hari lalu',
-      'isRead': true,
-    },
-    {
-      'icon': Icons.repeat,
-      'color': const Color(0xFF42A5F5),
-      'title': 'Task berulang dibuat',
-      'subtitle': 'Customer ads Meetings telah dijadwalkan ulang',
-      'time': '3 hari lalu',
-      'isRead': true,
-    },
-  ];
+  List<Map<String, dynamic>> _notifications = [];
 
   @override
   Widget build(BuildContext context) {
@@ -97,12 +119,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
         actions: [
           if (unreadCount > 0)
             TextButton(
-              onPressed: () {
-                setState(() {
-                  for (var n in _notifications) {
-                    n['isRead'] = true;
-                  }
-                });
+              onPressed: () async {
+                await NotificationService.markAllAsRead();
+                await _loadHistory();
               },
               child: const Text('Tandai semua',
                   style: TextStyle(color: Color(0xFF4CAF8D), fontSize: 13)),
@@ -229,7 +248,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   Widget _notifCard(Map<String, dynamic> n, int index) {
     return GestureDetector(
-      onTap: () => setState(() => _notifications[index]['isRead'] = true),
+      onTap: () async {
+        await NotificationService.markAsRead(_notifications[index]['id']);
+        await _loadHistory();
+      },
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(14),
@@ -256,11 +278,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
               width: 38,
               height: 38,
               decoration: BoxDecoration(
-                color: (n['color'] as Color).withOpacity(0.12),
+                color: _notifColor(n['type']).withOpacity(0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(n['icon'] as IconData,
-                  color: n['color'] as Color, size: 18),
+              child: Icon(_notifIcon(n['type']),
+                  color: _notifColor(n['type']), size: 18),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -283,7 +305,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    n['time'],
+                    _timeAgo(DateTime.parse(n['time'])),
                     style: const TextStyle(fontSize: 11, color: Colors.black38),
                   ),
                 ],

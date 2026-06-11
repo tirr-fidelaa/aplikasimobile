@@ -105,9 +105,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     setState(() => _isGCalLoading = true);
     try {
       final eventId = await GoogleCalendarService.addTaskToCalendar(task);
-      _showSyncMessage('✅ "${task.title}" berhasil di-sync ke Google Calendar');
-      await _loadGoogleEvents(); // refresh
-    } catch (e) {
+      // Simpan ID event ke task agar dapat di‑hapus nanti
+      await widget.onUpdateTask(task.copyWith(calendarEventId: eventId));   } catch (e) {
       _showSyncMessage('❌ Gagal sync: $e');
     } finally {
       setState(() => _isGCalLoading = false);

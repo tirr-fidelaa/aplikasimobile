@@ -38,6 +38,9 @@ dependencies:
 
   image_picker: ^1.0.7
 
+  flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
+
   google_sign_in: ^6.2.1
   googleapis: ^13.2.0
   googleapis_auth: ^1.6.0

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'models/task_model.dart';
 import 'services/task_services.dart';
+import 'services/notification_service.dart';
 import 'pages/add_task_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/notifications_page.dart';
@@ -12,7 +13,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/google_calendar_service.dart';
 import 'package:googleapis/calendar/v3.dart' as gcal;
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.init();
   runApp(const TodoApp());
 }
 
@@ -28,12 +31,25 @@ class TodoApp extends StatefulWidget {
 
 class _TodoAppState extends State<TodoApp> {
   ThemeMode _themeMode = ThemeMode.light;
+  int _unreadCount = 0;
+
+  int get unreadCount => _unreadCount;
 
   @override
   void initState() {
     super.initState();
     _loadTheme();
+    // Cek login Google secara diam‑diam saat aplikasi pertama kali dijalankan
+    // sehingga operasi tambah/hapus task dapat langsung sinkron dengan Google Calendar.
+    GoogleCalendarService.trySilentSignIn();
   }
+
+  Future<void> _loadUnreadCount() async {
+    final count = await NotificationService.getUnreadCount();
+    setState(() => _unreadCount = count);
+  }
+
+  Future<void> refreshUnreadCount() => _loadUnreadCount();
 
   Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
@@ -128,20 +144,37 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _saveTask(TaskModel task) async {
     final exists = _tasks.any((t) => t.id == task.id);
     List<TaskModel> updated;
+    // Ensure Google sign-in state
+    await GoogleCalendarService.trySilentSignIn();
     if (exists) {
+      // Update existing task locally
       updated = await TaskServices.updateTask(_tasks, task);
-      // Update di Google Calendar kalau sudah pernah di-sync
-      if (task.calendarEventId != null && GoogleCalendarService.isSignedIn) {
-        try {
-          await GoogleCalendarService.updateCalendarEvent(
-              task.calendarEventId!, task);
-        } catch (e) {
-          debugPrint('Gagal update Google Calendar: $e');
+      // Sync with Google Calendar
+      if (GoogleCalendarService.isSignedIn) {
+        if (task.calendarEventId != null) {
+          // Update existing event
+          try {
+            await GoogleCalendarService.updateCalendarEvent(task.calendarEventId!, task);
+          } catch (e) {
+            debugPrint('Failed to update Google Calendar: $e');
+          }
+        } else if (task.dueDate != null) {
+          // No existing event, create one
+          try {
+            final eventId = await GoogleCalendarService.addTaskToCalendar(task);
+            if (eventId != null) {
+              final updatedTask = task.copyWith(calendarEventId: eventId);
+              updated = await TaskServices.updateTask(updated, updatedTask);
+            }
+          } catch (e) {
+            debugPrint('Failed to add task to Google Calendar: $e');
+          }
         }
       }
     } else {
+      // Add new task locally
       updated = await TaskServices.addTask(_tasks, task);
-      // Auto sync ke Google Calendar kalau sudah login dan task punya due date
+      // Auto sync to Google Calendar if signed in
       if (GoogleCalendarService.isSignedIn && task.dueDate != null) {
         try {
           final eventId = await GoogleCalendarService.addTaskToCalendar(task);
@@ -150,14 +183,26 @@ class _MainScreenState extends State<MainScreen> {
             updated = await TaskServices.updateTask(updated, updatedTask);
           }
         } catch (e) {
-          debugPrint('Gagal auto sync ke Google Calendar: $e');
+          debugPrint('Failed to auto sync to Google Calendar: $e');
         }
       }
     }
+    // Schedule notifications
+    if (task.status != TaskStatus.done) {
+      await NotificationService.cancelTaskNotifications(task.id);
+      await NotificationService.scheduleTaskReminder(task);
+      await NotificationService.scheduleDueDateNotif(task);
+      await NotificationService.scheduleOverdueNotif(task);
+    } else {
+      await NotificationService.cancelTaskNotifications(task.id);
+    }
+    await TodoApp.of(context)?.refreshUnreadCount();
     setState(() => _tasks = updated);
   }
 
   Future<void> _deleteTask(String id) async {
+    // Attempt silent sign-in before attempting delete sync
+    await GoogleCalendarService.trySilentSignIn();
     // Cari task sebelum dihapus untuk cek calendarEventId
     final taskIndex = _tasks.indexWhere((t) => t.id == id);
     if (taskIndex != -1) {
@@ -171,7 +216,7 @@ class _MainScreenState extends State<MainScreen> {
         }
       }
     }
-
+    await NotificationService.cancelTaskNotifications(id);
     final updated = await TaskServices.deleteTask(_tasks, id);
     setState(() => _tasks = updated);
   }
@@ -222,6 +267,7 @@ class _MainScreenState extends State<MainScreen> {
             onDeleteAll: _deleteAllTasks,
             photoPath: _photoPath,
             userName: _userName,
+            unreadCount: TodoApp.of(context)?.unreadCount ?? 0,
           ),
           ScheduleScreen(
             tasks: _tasks,
@@ -259,6 +305,7 @@ class BoardsScreen extends StatefulWidget {
   final VoidCallback onDeleteAll;
   final String? photoPath;
   final String userName;
+  final int unreadCount;
 
   const BoardsScreen({
     Key? key,
@@ -269,6 +316,7 @@ class BoardsScreen extends StatefulWidget {
     required this.onTabChange,
     required this.onDeleteAll,
     required this.userName,
+    required this.unreadCount,
     this.photoPath,
   }) : super(key: key);
 
@@ -325,19 +373,28 @@ class _BoardsScreenState extends State<BoardsScreen>
             IconButton(
               icon:
                   const Icon(Icons.notifications_outlined, color: Colors.black),
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const NotificationsPage())),
+              onPressed: () async {
+                await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const NotificationsPage()));
+                // Refresh unread count setelah balik dari halaman notifikasi
+                if (context.mounted) {
+                  TodoApp.of(context)?.refreshUnreadCount();
+                }
+              },
             ),
-            Positioned(
-              right: 10,
-              top: 10,
-              child: Container(
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(
-                    color: Colors.red, shape: BoxShape.circle),
+            if (widget.unreadCount > 0)
+              Positioned(
+                right: 10,
+                top: 10,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                      color: Colors.red, shape: BoxShape.circle),
+                ),
               ),
-            ),
           ]),
           Padding(
             padding: const EdgeInsets.only(right: 12),
@@ -819,34 +876,8 @@ class _TaskCard extends StatelessWidget {
           ],
           const SizedBox(height: 12),
           Row(children: [
-            // Avatar placeholder
-            SizedBox(
-              height: 26,
-              width: 60,
-              child: Stack(
-                children: List.generate(
-                    3,
-                    (i) => Positioned(
-                          left: i * 16.0,
-                          child: Container(
-                            width: 26,
-                            height: 26,
-                            decoration: BoxDecoration(
-                              color: [
-                                const Color(0xFFE8B89A),
-                                const Color(0xFFA8D8C8),
-                                const Color(0xFF90CAF9)
-                              ][i],
-                              shape: BoxShape.circle,
-                              border:
-                                  Border.all(color: Colors.white, width: 1.5),
-                            ),
-                            child: const Icon(Icons.person,
-                                size: 14, color: Colors.white),
-                          ),
-                        )),
-              ),
-            ),
+// Avatar placeholder removed per user request
+const SizedBox.shrink(),
             const Spacer(),
             if (task.dueDate != null)
               Row(children: [
